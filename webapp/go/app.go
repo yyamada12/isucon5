@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-sql-driver/mysql"
@@ -22,9 +23,43 @@ import (
 )
 
 var (
-	db    *sql.DB
-	store *sessions.CookieStore
+	db          *sql.DB
+	store       *sessions.CookieStore
+	relationMap RelationMap
 )
+
+type RelationMap struct {
+	mu sync.RWMutex
+	m  map[int]map[int]time.Time
+}
+
+func (r *RelationMap) store(key1, key2 int, value time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	m, ok := r.m[key1]
+	if !ok {
+		m = make(map[int]time.Time)
+	}
+	m[key2] = value
+	r.m[key1] = m
+}
+
+func (r *RelationMap) load(key1, key2 int) (time.Time, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	m, ok := r.m[key1]
+	if !ok {
+		return time.Time{}, false
+	}
+	t, ok := m[key2]
+	return t, ok
+}
+
+func (r *RelationMap) loadFriends(key int) map[int]time.Time {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return relationMap.m[key]
+}
 
 type User struct {
 	ID          int
@@ -158,11 +193,8 @@ func getUserFromAccount(w http.ResponseWriter, name string) *User {
 func isFriend(w http.ResponseWriter, r *http.Request, anotherID int) bool {
 	session := getSession(w, r)
 	id := session.Values["user_id"]
-	row := db.QueryRow(`SELECT COUNT(1) AS cnt FROM relations WHERE (one = ? AND another = ?) OR (one = ? AND another = ?)`, id, anotherID, anotherID, id)
-	cnt := new(int)
-	err := row.Scan(cnt)
-	checkErr(err)
-	return *cnt > 0
+	_, ok := relationMap.load(id.(int), anotherID)
+	return ok
 }
 
 func isFriendAccount(w http.ResponseWriter, r *http.Request, name string) bool {
@@ -338,7 +370,7 @@ LIMIT 10`, user.ID)
 	}
 	rows.Close()
 
-	rows, err = db.Query(`SELECT e.* FROM entries AS e INNER JOIN relations AS r ON e.user_id = r.one WHERE r.another = ? ORDER BY e.created_at DESC LIMIT 10`, user.ID)
+	rows, err = db.Query(`SELECT * FROM entries ORDER BY created_at DESC LIMIT 1000`)
 	if err != sql.ErrNoRows {
 		checkErr(err)
 	}
@@ -348,7 +380,13 @@ LIMIT 10`, user.ID)
 		var body string
 		var createdAt time.Time
 		checkErr(rows.Scan(&id, &userID, &private, &body, &createdAt))
+		if !isFriend(w, r, userID) {
+			continue
+		}
 		entriesOfFriends = append(entriesOfFriends, Entry{id, userID, private == 1, strings.SplitN(body, "\n", 2)[0], strings.SplitN(body, "\n", 2)[1], createdAt})
+		if len(entriesOfFriends) >= 10 {
+			break
+		}
 	}
 	rows.Close()
 
@@ -381,25 +419,11 @@ LIMIT 10`, user.ID)
 	}
 	rows.Close()
 
-	rows, err = db.Query(`SELECT * FROM relations WHERE one = ? ORDER BY created_at DESC`, user.ID)
-	if err != sql.ErrNoRows {
-		checkErr(err)
-	}
-	friendsMap := make(map[int]time.Time)
-	for rows.Next() {
-		var id, one, another int
-		var createdAt time.Time
-		checkErr(rows.Scan(&id, &one, &another, &createdAt))
-		var friendID int = another
-		if _, ok := friendsMap[friendID]; !ok {
-			friendsMap[friendID] = createdAt
-		}
-	}
+	friendsMap := relationMap.loadFriends(user.ID)
 	friends := make([]Friend, 0, len(friendsMap))
 	for key, val := range friendsMap {
 		friends = append(friends, Friend{key, val})
 	}
-	rows.Close()
 
 	rows, err = db.Query(`SELECT user_id, owner_id, DATE(created_at) AS date, MAX(created_at) AS updated
 FROM footprints
@@ -662,21 +686,8 @@ func GetFriends(w http.ResponseWriter, r *http.Request) {
 	}
 
 	user := getCurrentUser(w, r)
-	rows, err := db.Query(`SELECT * FROM relations WHERE one = ? ORDER BY created_at DESC`, user.ID)
-	if err != sql.ErrNoRows {
-		checkErr(err)
-	}
-	friendsMap := make(map[int]time.Time)
-	for rows.Next() {
-		var id, one, another int
-		var createdAt time.Time
-		checkErr(rows.Scan(&id, &one, &another, &createdAt))
-		var friendID int = another
-		if _, ok := friendsMap[friendID]; !ok {
-			friendsMap[friendID] = createdAt
-		}
-	}
-	rows.Close()
+
+	friendsMap := relationMap.loadFriends(user.ID)
 	friends := make([]Friend, 0, len(friendsMap))
 	for key, val := range friendsMap {
 		friends = append(friends, Friend{key, val})
@@ -693,8 +704,9 @@ func PostFriends(w http.ResponseWriter, r *http.Request) {
 	anotherAccount := mux.Vars(r)["account_name"]
 	if !isFriendAccount(w, r, anotherAccount) {
 		another := getUserFromAccount(w, anotherAccount)
-		_, err := db.Exec(`INSERT INTO relations (one, another) VALUES (?,?), (?,?)`, user.ID, another.ID, another.ID, user.ID)
-		checkErr(err)
+
+		relationMap.store(user.ID, another.ID, time.Now())
+		relationMap.store(another.ID, user.ID, time.Now())
 		http.Redirect(w, r, "/friends", http.StatusSeeOther)
 	}
 }
@@ -704,6 +716,19 @@ func GetInitialize(w http.ResponseWriter, r *http.Request) {
 	db.Exec("DELETE FROM footprints WHERE id > 500000")
 	db.Exec("DELETE FROM entries WHERE id > 500000")
 	db.Exec("DELETE FROM comments WHERE id > 1500000")
+
+	relationMap = RelationMap{m: map[int]map[int]time.Time{}}
+	rows, err := db.Query(`SELECT one, another, created_at FROM relations`)
+	if err != sql.ErrNoRows {
+		checkErr(err)
+	}
+	for rows.Next() {
+		var one, another int
+		var createdAt time.Time
+		checkErr(rows.Scan(&one, &another, &createdAt))
+		relationMap.store(one, another, createdAt)
+	}
+	rows.Close()
 }
 
 func main() {
