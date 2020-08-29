@@ -355,8 +355,7 @@ func GetIndex(w http.ResponseWriter, r *http.Request) {
 
 	rows, err = db.Query(`SELECT c.id AS id, c.entry_id AS entry_id, c.user_id AS user_id, c.comment AS comment, c.created_at AS created_at
 FROM comments c
-JOIN entries e ON c.entry_id = e.id
-WHERE e.user_id = ?
+WHERE c.entry_user_id = ?
 ORDER BY c.created_at DESC
 LIMIT 10`, user.ID)
 	if err != sql.ErrNoRows {
@@ -390,7 +389,7 @@ LIMIT 10`, user.ID)
 	}
 	rows.Close()
 
-	rows, err = db.Query(`SELECT * FROM comments ORDER BY created_at DESC LIMIT 1000`)
+	rows, err = db.Query(`SELECT c.id, c.entry_id, c.user_id, c.comment, c.created_at FROM comments as c ORDER BY created_at DESC LIMIT 1000`)
 	if err != sql.ErrNoRows {
 		checkErr(err)
 	}
@@ -583,7 +582,7 @@ func GetEntry(w http.ResponseWriter, r *http.Request) {
 			checkErr(ErrPermissionDenied)
 		}
 	}
-	rows, err := db.Query(`SELECT * FROM comments WHERE entry_id = ?`, entry.ID)
+	rows, err := db.Query(`SELECT c.id, c.entry_id, c.user_id, c.comment, c.created_at FROM comments as c WHERE entry_id = ?`, entry.ID)
 	if err != sql.ErrNoRows {
 		checkErr(err)
 	}
@@ -651,7 +650,7 @@ func PostComment(w http.ResponseWriter, r *http.Request) {
 	}
 	user := getCurrentUser(w, r)
 
-	_, err = db.Exec(`INSERT INTO comments (entry_id, user_id, comment) VALUES (?,?,?)`, entry.ID, user.ID, r.FormValue("comment"))
+	_, err = db.Exec(`INSERT INTO comments (entry_id, user_id, comment, entry_user_id) VALUES (?,?,?,?)`, entry.ID, user.ID, r.FormValue("comment"), entry.UserID)
 	checkErr(err)
 	http.Redirect(w, r, "/diary/entry/"+strconv.Itoa(entry.ID), http.StatusSeeOther)
 }
