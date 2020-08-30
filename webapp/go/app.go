@@ -389,25 +389,21 @@ LIMIT 10`, user.ID)
 	}
 	rows.Close()
 
-	rows, err = db.Query(`SELECT c.id, c.entry_id, c.user_id, c.comment, c.created_at FROM comments as c ORDER BY created_at DESC LIMIT 1000`)
+	rows, err = db.Query(`SELECT c.id, c.entry_id, c.user_id, c.comment, c.created_at, c.entry_user_id, c.entry_private FROM comments as c ORDER BY created_at DESC LIMIT 1000`)
 	if err != sql.ErrNoRows {
 		checkErr(err)
 	}
 	commentsOfFriends := make([]Comment, 0, 10)
 	for rows.Next() {
 		c := Comment{}
-		checkErr(rows.Scan(&c.ID, &c.EntryID, &c.UserID, &c.Comment, &c.CreatedAt))
+		var entryUserId, entryPrivate int
+		checkErr(rows.Scan(&c.ID, &c.EntryID, &c.UserID, &c.Comment, &c.CreatedAt, &entryUserId, &entryPrivate))
 		if !isFriend(w, r, c.UserID) {
 			continue
 		}
-		row := db.QueryRow(`SELECT * FROM entries WHERE id = ?`, c.EntryID)
-		var id, userID, private int
-		var body string
-		var createdAt time.Time
-		checkErr(row.Scan(&id, &userID, &private, &body, &createdAt))
-		entry := Entry{id, userID, private == 1, strings.SplitN(body, "\n", 2)[0], strings.SplitN(body, "\n", 2)[1], createdAt}
-		if entry.Private {
-			if !permitted(w, r, entry.UserID) {
+
+		if entryPrivate == 1 {
+			if !permitted(w, r, entryUserId) {
 				continue
 			}
 		}
@@ -650,7 +646,7 @@ func PostComment(w http.ResponseWriter, r *http.Request) {
 	}
 	user := getCurrentUser(w, r)
 
-	_, err = db.Exec(`INSERT INTO comments (entry_id, user_id, comment, entry_user_id) VALUES (?,?,?,?)`, entry.ID, user.ID, r.FormValue("comment"), entry.UserID)
+	_, err = db.Exec(`INSERT INTO comments (entry_id, user_id, comment, entry_user_id, entry_private) VALUES (?,?,?,?,?)`, entry.ID, user.ID, r.FormValue("comment"), entry.UserID, private)
 	checkErr(err)
 	http.Redirect(w, r, "/diary/entry/"+strconv.Itoa(entry.ID), http.StatusSeeOther)
 }
