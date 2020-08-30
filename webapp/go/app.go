@@ -627,28 +627,25 @@ func PostComment(w http.ResponseWriter, r *http.Request) {
 	}
 
 	entryID := mux.Vars(r)["entry_id"]
-	row := db.QueryRow(`SELECT * FROM entries WHERE id = ?`, entryID)
+	row := db.QueryRow(`SELECT id, user_id, private FROM entries WHERE id = ?`, entryID)
 	var id, userID, private int
-	var body string
-	var createdAt time.Time
-	err := row.Scan(&id, &userID, &private, &body, &createdAt)
+	err := row.Scan(&id, &userID, &private)
 	if err == sql.ErrNoRows {
 		checkErr(ErrContentNotFound)
 	}
 	checkErr(err)
 
-	entry := Entry{id, userID, private == 1, strings.SplitN(body, "\n", 2)[0], strings.SplitN(body, "\n", 2)[1], createdAt}
-	owner := getUser(w, entry.UserID)
-	if entry.Private {
+	owner := getUser(w, userID)
+	if private == 1 {
 		if !permitted(w, r, owner.ID) {
 			checkErr(ErrPermissionDenied)
 		}
 	}
 	user := getCurrentUser(w, r)
 
-	_, err = db.Exec(`INSERT INTO comments (entry_id, user_id, comment, entry_user_id, entry_private) VALUES (?,?,?,?,?)`, entry.ID, user.ID, r.FormValue("comment"), entry.UserID, private)
+	_, err = db.Exec(`INSERT INTO comments (entry_id, user_id, comment, entry_user_id, entry_private) VALUES (?,?,?,?,?)`, id, user.ID, r.FormValue("comment"), userID, private)
 	checkErr(err)
-	http.Redirect(w, r, "/diary/entry/"+strconv.Itoa(entry.ID), http.StatusSeeOther)
+	http.Redirect(w, r, "/diary/entry/"+strconv.Itoa(id), http.StatusSeeOther)
 }
 
 func GetFootprints(w http.ResponseWriter, r *http.Request) {
