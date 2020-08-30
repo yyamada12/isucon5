@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"html/template"
 	"log"
 	"net/http"
@@ -26,6 +27,8 @@ var (
 	db          *sql.DB
 	store       *sessions.CookieStore
 	relationMap RelationMap
+	id2user     map[int]*User
+	an2user     map[string]*User
 )
 
 type RelationMap struct {
@@ -148,15 +151,14 @@ func getCurrentUser(w http.ResponseWriter, r *http.Request) *User {
 	if !ok || userID == nil {
 		return nil
 	}
-	row := db.QueryRow(`SELECT id, account_name, nick_name, email FROM users WHERE id=?`, userID)
-	user := User{}
-	err := row.Scan(&user.ID, &user.AccountName, &user.NickName, &user.Email)
-	if err == sql.ErrNoRows {
-		checkErr(ErrAuthentication)
+
+	user := id2user[userID.(int)]
+	if user.Email != user.Email {
+		fmt.Println(user.Email, user.Email)
 	}
-	checkErr(err)
-	context.Set(r, "user", user)
-	return &user
+	context.Set(r, "user", *user)
+
+	return user
 }
 
 func authenticated(w http.ResponseWriter, r *http.Request) bool {
@@ -169,25 +171,11 @@ func authenticated(w http.ResponseWriter, r *http.Request) bool {
 }
 
 func getUser(w http.ResponseWriter, userID int) *User {
-	row := db.QueryRow(`SELECT * FROM users WHERE id = ?`, userID)
-	user := User{}
-	err := row.Scan(&user.ID, &user.AccountName, &user.NickName, &user.Email, new(string))
-	if err == sql.ErrNoRows {
-		checkErr(ErrContentNotFound)
-	}
-	checkErr(err)
-	return &user
+	return id2user[userID]
 }
 
 func getUserFromAccount(w http.ResponseWriter, name string) *User {
-	row := db.QueryRow(`SELECT * FROM users WHERE account_name = ?`, name)
-	user := User{}
-	err := row.Scan(&user.ID, &user.AccountName, &user.NickName, &user.Email, new(string))
-	if err == sql.ErrNoRows {
-		checkErr(ErrContentNotFound)
-	}
-	checkErr(err)
-	return &user
+	return an2user[name]
 }
 
 func isFriend(w http.ResponseWriter, r *http.Request, anotherID int) bool {
@@ -719,6 +707,23 @@ func GetInitialize(w http.ResponseWriter, r *http.Request) {
 		var createdAt time.Time
 		checkErr(rows.Scan(&one, &another, &createdAt))
 		relationMap.store(one, another, createdAt)
+	}
+	rows.Close()
+
+	id2user = make(map[int]*User)
+	an2user = make(map[string]*User)
+
+	rows, err = db.Query(`SELECT id, account_name, nick_name, email FROM users`)
+	if err != sql.ErrNoRows {
+		checkErr(err)
+	}
+	for rows.Next() {
+		var id int
+		var accountName, nickName, email string
+		checkErr(rows.Scan(&id, &accountName, &nickName, &email))
+		u := &User{id, accountName, nickName, email}
+		id2user[id] = u
+		an2user[accountName] = u
 	}
 	rows.Close()
 }
