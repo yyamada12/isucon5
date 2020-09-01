@@ -6,13 +6,16 @@ import (
 	"fmt"
 	"html/template"
 	"log"
+	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"path"
 	"runtime"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/go-sql-driver/mysql"
@@ -798,7 +801,28 @@ func main() {
 	r.HandleFunc("/initialize", myHandler(GetInitialize))
 	r.HandleFunc("/", myHandler(GetIndex))
 	r.PathPrefix("/").Handler(http.FileServer(http.Dir("../static")))
-	log.Fatal(http.ListenAndServe(":8080", r))
+
+	// use unix domain socket
+	ln, err := net.Listen("unix", "/var/run/isucon/go.sock")
+	if err != nil {
+		log.Fatalf("Failed to listen unix socket: %v", err)
+	}
+	defer func() {
+		if err := ln.Close(); err != nil {
+			log.Fatalf("Failed to close listener: %v", err)
+		}
+	}()
+
+	c := make(chan os.Signal, 2)
+	go func(ln net.Listener, c chan os.Signal) {
+		signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+		<-c
+		if err := ln.Close(); err != nil {
+			log.Fatalf("Failed to close listener: %v", err)
+		}
+		os.Exit(1)
+	}(ln, c)
+	log.Fatal(http.Serve(ln, r))
 }
 
 func checkErr(err error) {
